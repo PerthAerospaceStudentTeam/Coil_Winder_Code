@@ -1,12 +1,14 @@
 // Motor Pins
-const int spoolStep = 8;
-const int spoolDir = 7;
+const int spoolStep = 3;
+const int spoolDir = 2;
 const int feederStep = 11;
 const int feederDir = 10;
 
 // Limit Switch Pins
-const int leftLimit = 4;
-const int rightLimit = 9;
+const int leftLimit = 5;
+const int rightLimit = 4;
+
+const int sleepPin = 7;
 
 // Physical Hardware Variables
 float wireDiameter = 0.25;    // Diameter in mm
@@ -66,12 +68,13 @@ void loop() {
 
     // Spool Movement
     digitalWrite(spoolStep, HIGH);
+    delayMicroseconds(5);
 
     // Feeder Syncing
     spoolStepCount++;
     if (spoolStepCount >= stepRatio) {
       digitalWrite(feederStep, HIGH);
-      delayMicroseconds(10);
+      delayMicroseconds(5);
       digitalWrite(feederStep, LOW);
       spoolStepCount = 0;
     }
