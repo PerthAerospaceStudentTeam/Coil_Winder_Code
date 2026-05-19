@@ -11,7 +11,7 @@ const int rightLimit = 4;
 const int sleepPin = 7;
 
 // Physical Hardware Variables
-float wireDiameter = 0.25;    // Diameter in mm
+float wireDiameter = 0.20;    // Diameter in mm
 float threadPitch = 1.25;     // M8 rod = 1.25mm per rotation
 int stepsPerRev = 200;        // NEMA 17 standard
 
@@ -19,11 +19,16 @@ int stepsPerRev = 200;        // NEMA 17 standard
 int stepRatio;                
 int spoolStepCount = 0;
 bool isWinding = false;
+bool goingHome = false;
 bool currentFeederDir = HIGH;
 
 // Variables for tracking number of windings
 long targetTotalSteps = 0;
 long totalSpoolStepsTaken = 0;
+
+// Accumulator variables for more precise steps
+float feederStepsPerSpoolStep;
+float feederStepAccumulator = 0.0;
 
 void setup() {
   Serial.begin(9600);
@@ -35,29 +40,55 @@ void setup() {
   pinMode(leftLimit, INPUT_PULLUP);
   pinMode(rightLimit, INPUT_PULLUP);
 
-  // Calculate ratio
+  // Calculate decimal ratio
   float mmPerFeederStep = threadPitch / (float)stepsPerRev;
   float feederStepsPerWire = wireDiameter / mmPerFeederStep;
-  stepRatio = (int)((float)stepsPerRev / feederStepsPerWire);
+  feederStepsPerSpoolStep = feederStepsPerWire / (float)stepsPerRev;
 
   // stepRatio must be at least 1
   if (stepRatio < 1) stepRatio = 1;
 
-  Serial.println("Calculated Step Ratio: ");
-  Serial.println(stepRatio);
+  Serial.println("Calculated Feeder Step Ratio: ");
+  Serial.println(feederStepsPerSpoolStep, 4);
   Serial.println("Enter the number of windings required to start.");
   Serial.println("Press 's' for manual/emergency stop");
+  Serial.println("Press 'i' to home the feeder (to right limit switch)");
 }
 
 void loop() {
   // Serial Inputs
   if (Serial.available() > 0) {
-    Strong inputStr = Serial.readStringUntil('\n');
+    String inputStr = Serial.readStringUntil('\n');
     inputStr.trim();
 
     if (inputStr == "s") {
       isWinding = false;
       Serial.println("Winding stopped.");
+    }
+
+    if (inputStr == "i") { // Initialise winder by going all the way to right limit
+      isWinding = false;
+      goingHome = true;
+      Serial.println("Going home");
+
+      currentFeederDir = HIGH;
+      digitalWrite(feederDir, currentFeederDir);
+
+      while (goingHome == true) {
+        // Pulse feeder motor
+        digitalWrite(feederStep, HIGH);
+        delayMicroseconds(5);
+        digitalWrite(feederStep, LOW);
+        // Allow time to step
+        delayMicroseconds(2000);
+
+        // Check if reached home pos (right limit switch)
+        if (digitalRead(rightLimit) == LOW && currentFeederDir == HIGH) {
+          currentFeederDir = LOW;
+          goingHome = false;
+          Serial.println("Home");
+      }
+    }
     }
 
     else if (!isWinding) {
@@ -66,6 +97,7 @@ void loop() {
       if (requestedTurns > 0) {
         targetTotalSteps = requestedTurns * stepsPerRev; // Calculate number of spool steps required
         totalSpoolStepsTaken = 0; // Reset counter for new run
+        feederStepAccumulator = 0.0; // Reset accumulator for new run
         isWinding = true;
 
         Serial.print("Winding started for ");
@@ -94,15 +126,15 @@ void loop() {
     digitalWrite(spoolStep, HIGH);
     delayMicroseconds(5);
 
-    // Feeder Syncing
-    spoolStepCount++;
+    // Feeder syncing
     totalSpoolStepsTaken++;
+    feederStepAccumulator += feederStepsPerSpoolStep;
 
-    if (spoolStepCount >= stepRatio) {
+    if (feederStepAccumulator >= 1.0) {
       digitalWrite(feederStep, HIGH);
       delayMicroseconds(5);
       digitalWrite(feederStep, LOW);
-      spoolStepCount = 0;
+      feederStepAccumulator -= 1.0; // Subtract 1 so we keep remainder
     }
 
     digitalWrite(spoolStep, LOW);
@@ -115,40 +147,4 @@ void loop() {
       Serial.println("Enter a new number of turns to continue or start new coil...");
     }
   }
-
-  /* Old version of the winding sequence: spool would halt after hitting limit switch
-  if (isWinding) {
-    // Check if we hit a boundary and flip direction
-    if (digitalRead(leftLimit) == LOW) {
-      currentFeederDir = HIGH;
-      digitalWrite(feederDir, currentFeederDir);
-      Serial.println(">> Reversing Right");
-      delay(300); // Give it time to move away from the switch
-    }
-    
-    if (digitalRead(rightLimit) == LOW) {
-      currentFeederDir = LOW;
-      digitalWrite(feederDir, currentFeederDir);
-      Serial.println("<< Reversing Left");
-      delay(300);
-    }
-
-    // Spool Movement
-    digitalWrite(spoolStep, HIGH);
-    
-    // Feeder Syncing
-    spoolStepCount++;
-    if (spoolStepCount >= stepRatio) {
-      digitalWrite(feederStep, HIGH);
-      delayMicroseconds(10);
-      digitalWrite(feederStep, LOW);
-      spoolStepCount = 0;
-    } else {
-      delayMicroseconds(10); 
-    }
-
-    digitalWrite(spoolStep, LOW);
-    delayMicroseconds(2000); // Main speed control
-  }
-  */
 }
