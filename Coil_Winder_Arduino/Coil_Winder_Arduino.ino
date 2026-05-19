@@ -19,7 +19,11 @@ int stepsPerRev = 200;        // NEMA 17 standard
 int stepRatio;                
 int spoolStepCount = 0;
 bool isWinding = false;
-bool currentFeederDir = HIGH; 
+bool currentFeederDir = HIGH;
+
+// Variables for tracking number of windings
+long targetTotalSteps = 0;
+long totalSpoolStepsTaken = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -36,27 +40,47 @@ void setup() {
   float feederStepsPerWire = wireDiameter / mmPerFeederStep;
   stepRatio = (int)((float)stepsPerRev / feederStepsPerWire);
 
-  // Safety floor: stepRatio must be at least 1
+  // stepRatio must be at least 1
   if (stepRatio < 1) stepRatio = 1;
 
-  Serial.println("Calculated Step Ratio: "); Serial.println(stepRatio);
-  Serial.println("Commands: f (Start), s (Stop)");
+  Serial.println("Calculated Step Ratio: ");
+  Serial.println(stepRatio);
+  Serial.println("Enter the number of windings required to start.");
+  Serial.println("Press 's' for manual/emergency stop");
 }
 
 void loop() {
   // Serial Inputs
   if (Serial.available() > 0) {
-    char cmd = Serial.read();
-    if (cmd == 'f') { isWinding = true; Serial.println("Winding Started..."); }
-    if (cmd == 's') { isWinding = false; Serial.println("Stopped."); }
+    Strong inputStr = Serial.readStringUntil('\n');
+    inputStr.trim();
+
+    if (inputStr == "s") {
+      isWinding = false;
+      Serial.println("Winding stopped.");
+    }
+
+    else if (!isWinding) {
+      long requestedTurns = inputStr.toInt();
+
+      if (requestedTurns > 0) {
+        targetTotalSteps = requestedTurns * stepsPerRev; // Calculate number of spool steps required
+        totalSpoolStepsTaken = 0; // Reset counter for new run
+        isWinding = true;
+
+        Serial.print("Winding started for ");
+        Serial.print(requestedTurns);
+        Serial.println(" turns...");
+      }
+    }
   }
 
-  // Modified version of the mainloop
+  // Main loop
   if (isWinding) {
     // Constantly apply the current direction to the feeder motor
     digitalWrite(feederDir, currentFeederDir);
 
-    // Check boundaries and flip state, not motor pulse
+    // Check limit switches
     if (digitalRead(leftLimit) == LOW && currentFeederDir == LOW) {
       currentFeederDir = HIGH;
       Serial.println(">> Reversing Right");
@@ -72,6 +96,8 @@ void loop() {
 
     // Feeder Syncing
     spoolStepCount++;
+    totalSpoolStepsTaken++;
+
     if (spoolStepCount >= stepRatio) {
       digitalWrite(feederStep, HIGH);
       delayMicroseconds(5);
@@ -81,6 +107,13 @@ void loop() {
 
     digitalWrite(spoolStep, LOW);
     delayMicroseconds(2000); // Main speed control
+
+    // Check if winding complete
+    if (totalSpoolStepsTaken >= targetTotalSteps) {
+      isWinding = false;
+      Serial.println("WINDING COMPLETED");
+      Serial.println("Enter a new number of turns to continue or start new coil...");
+    }
   }
 
   /* Old version of the winding sequence: spool would halt after hitting limit switch
