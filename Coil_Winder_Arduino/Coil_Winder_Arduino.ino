@@ -1,3 +1,5 @@
+#include <AccelStepper.h>
+
 // Motor Pins
 const int spoolStep = 3;
 const int spoolDir = 2;
@@ -10,6 +12,10 @@ const int rightLimit = 4;
 
 const int sleepPin = 7;
 
+// AccelStepper instances
+AccelStepper spoolMotor(1, spoolStep, spoolDir);
+AccelStepper feederMotor(1, feederStep, feederDir);
+
 // Physical Hardware Variables
 float wireDiameter = 0.20;    // Diameter in mm
 float threadPitch = 1.25;     // M8 rod = 1.25mm per rotation
@@ -20,25 +26,28 @@ int stepRatio;
 int spoolStepCount = 0;
 bool isWinding = false;
 bool goingHome = false;
-bool currentFeederDir = HIGH;
+int currentFeederDir = 1;
 
 // Variables for tracking number of windings
 long targetTotalSteps = 0;
-long totalSpoolStepsTaken = 0;
 
 // Accumulator variables for more precise steps
+long lastSpoolPosition = 0;
+float feederTargetAccumulator = 0.0;
 float feederStepsPerSpoolStep;
-float feederStepAccumulator = 0.0;
 
 void setup() {
   Serial.begin(9600);
-  
-  pinMode(spoolStep, OUTPUT);
-  pinMode(spoolDir, OUTPUT);
-  pinMode(feederStep, OUTPUT);
-  pinMode(feederDir, OUTPUT);
+
   pinMode(leftLimit, INPUT_PULLUP);
   pinMode(rightLimit, INPUT_PULLUP);
+
+  // Configure AccelStepper max speed/acceleration
+  spoolMotor.setMaxSpeed(1000);
+  spoolMotor.setAcceleration(500);
+
+  feederMotor.setMaxSpeed(1000);
+  feederMotor.setAcceleration(1000);
 
   // Calculate decimal ratio
   float mmPerFeederStep = threadPitch / (float)stepsPerRev;
@@ -63,41 +72,35 @@ void loop() {
 
     if (inputStr == "s") {
       isWinding = false;
+      spoolMotor.stop();
+      feederMotor.stop();
       Serial.println("Winding stopped.");
     }
 
     if (inputStr == "i") { // Initialise winder by going all the way to right limit
       isWinding = false;
       goingHome = true;
-      Serial.println("Going home");
+      Serial.println("Going home...");
 
-      currentFeederDir = HIGH;
-      digitalWrite(feederDir, currentFeederDir);
-
-      while (goingHome == true) {
-        // Pulse feeder motor
-        digitalWrite(feederStep, HIGH);
-        delayMicroseconds(5);
-        digitalWrite(feederStep, LOW);
-        // Allow time to step
-        delayMicroseconds(2000);
-
-        // Check if reached home pos (right limit switch)
-        if (digitalRead(rightLimit) == LOW && currentFeederDir == HIGH) {
-          currentFeederDir = LOW;
-          goingHome = false;
-          Serial.println("Home");
-      }
-    }
+      feederMotor.setSpeed(400);
     }
 
-    else if (!isWinding) {
+    else if (!isWinding && !goingHome) {
       long requestedTurns = inputStr.toInt();
 
       if (requestedTurns > 0) {
         targetTotalSteps = requestedTurns * stepsPerRev; // Calculate number of spool steps required
-        totalSpoolStepsTaken = 0; // Reset counter for new run
-        feederStepAccumulator = 0.0; // Reset accumulator for new run
+        
+        // Reset absolute positions to 0 before starting a new run
+        spoolMotor.setCurrentPosition(0);
+        feederMotor.setCurrentPosition(0);
+
+        lastSpoolPosition = 0;
+        feederTargetAccumulator = 0.0;
+        
+        spoolMotor.moveTo(targetTotalSteps);
+
+        currentFeederDir = 1;
         isWinding = true;
 
         Serial.print("Winding started for ");
@@ -107,41 +110,49 @@ void loop() {
     }
   }
 
+
+  // Homing Routine
+  if(goingHome) {
+    if(digitalRead(rightLimit) == LOW) {
+      feederMotor.stop();
+      feederMotor.setCurrentPosition(0);
+      goingHome = false;
+      Serial.println("Home.");
+    } else {
+      feederMotor.runSpeed();
+    }
+  }
   // Main loop
   if (isWinding) {
-    // Constantly apply the current direction to the feeder motor
-    digitalWrite(feederDir, currentFeederDir);
 
     // Check limit switches
-    if (digitalRead(leftLimit) == LOW && currentFeederDir == LOW) {
-      currentFeederDir = HIGH;
+    if (digitalRead(leftLimit) == LOW && currentFeederDir == -1) {
+      currentFeederDir = 1;
       Serial.println(">> Reversing Right");
     }
-    if (digitalRead(rightLimit) == LOW && currentFeederDir == HIGH) {
-      currentFeederDir = LOW;
+    if (digitalRead(rightLimit) == LOW && currentFeederDir == 1) {
+      currentFeederDir = -1;
       Serial.println("<< Reversing Left");
     }
 
-    // Spool Movement
-    digitalWrite(spoolStep, HIGH);
-    delayMicroseconds(5);
+    if (spoolMotor.distanceToGo() != 0) {
+      spoolMotor.run();
 
-    // Feeder syncing
-    totalSpoolStepsTaken++;
-    feederStepAccumulator += feederStepsPerSpoolStep;
+      long currentSpoolPos = spoolMotor.currentPosition();
+      long spoolDelta = currentSpoolPos - lastSpoolPosition;
 
-    if (feederStepAccumulator >= 1.0) {
-      digitalWrite(feederStep, HIGH);
-      delayMicroseconds(5);
-      digitalWrite(feederStep, LOW);
-      feederStepAccumulator -= 1.0; // Subtract 1 so we keep remainder
+      if (spoolDelta != 0) {
+        feederTargetAccumulator += (spoolDelta * feederStepsPerSpoolStep * currentFeederDir);
+        lastSpoolPosition = currentSpoolPos;
+        feederMotor.moveTo((long)feederTargetAccumulator);
+      }
+
+      float dynamicFeederSpeed = spoolMotor.speed() * feederStepsPerSpoolStep * currentFeederDir;
+      feederMotor.setSpeed(dynamicFeederSpeed);
+      feederMotor.runSpeedToPosition();
     }
-
-    digitalWrite(spoolStep, LOW);
-    delayMicroseconds(2000); // Main speed control
-
     // Check if winding complete
-    if (totalSpoolStepsTaken >= targetTotalSteps) {
+    else {
       isWinding = false;
       Serial.println("WINDING COMPLETED");
       Serial.println("Enter a new number of turns to continue or start new coil...");
